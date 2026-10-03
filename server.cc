@@ -1,108 +1,57 @@
 #include "server.h"
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <cstdint>
-#include <cstring>
 #include <string>
-#include <string_view>
 #include <thread>
+#include <utility>
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
+#include "absl/status/statusor.h"
 #include "http.h"
+#include "net.h"
 
 namespace {
 
-constexpr size_t kMaxHeaderBytes = 16 * 1024;
-constexpr int kTimeoutSeconds = 10;
+// Largest request head accepted. Real browsers send well under this; the
+// limit only stops a client from making the server buffer data indefinitely.
+constexpr size_t kMaxHeadBytes = 16 * 1024;
 
-absl::Status ErrnoStatus(std::string_view what) {
-  return absl::UnavailableError(absl::StrCat(what, ": ", strerror(errno)));
-}
-
-void SendAll(int fd, std::string_view data) {
-  while (!data.empty()) {
-    // MSG_NOSIGNAL: a client that hung up should not kill us with SIGPIPE.
-    ssize_t n = send(fd, data.data(), data.size(), MSG_NOSIGNAL);
-    if (n <= 0) return;
-    data.remove_prefix(n);
+// Reads one request from `connection` and writes back the response. The
+// connection is closed on return.
+void AnswerOneRequest(TcpConnection connection, const Handler& handler) {
+  absl::StatusOr<std::string> head =
+      connection.ReadUntil(kHeadTerminator, kMaxHeadBytes);
+  if (absl::IsResourceExhausted(head.status())) {
+    connection.Write(SerializeResponse(StatusResponse(431)));
+    return;
   }
-}
+  // The client left or went silent mid-request: there is nobody to answer.
+  if (!head.ok()) return;
 
-void HandleConnection(int fd, const Handler& handler) {
-  // Bounds how long a slow or silent client can hold this thread.
-  timeval timeout{.tv_sec = kTimeoutSeconds, .tv_usec = 0};
-  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-  std::string buffer;
-  char chunk[4096];
-  size_t head_end;
-  while ((head_end = buffer.find("\r\n\r\n")) == std::string::npos) {
-    if (buffer.size() > kMaxHeaderBytes) {
-      SendAll(fd, SerializeResponse(StatusResponse(431)));
-      close(fd);
-      return;
-    }
-    ssize_t n = recv(fd, chunk, sizeof(chunk), 0);
-    if (n <= 0) {
-      close(fd);
-      return;
-    }
-    buffer.append(chunk, n);
-  }
-
-  absl::StatusOr<Request> request =
-      ParseRequest(std::string_view(buffer).substr(0, head_end));
-  if (request.ok()) {
-    Response response = handler(*request);
-    LOG(INFO) << request->method << " " << request->path << " "
-              << response.status;
-    SendAll(fd, SerializeResponse(response, request->method != "HEAD"));
-  } else {
+  absl::StatusOr<Request> request = ParseRequest(*head);
+  if (!request.ok()) {
     LOG(INFO) << "bad request: " << request.status().message();
-    SendAll(fd, SerializeResponse(StatusResponse(400)));
+    connection.Write(SerializeResponse(StatusResponse(400)));
+    return;
   }
-  close(fd);
+
+  Response response = handler(*request);
+  LOG(INFO) << request->method << " " << request->path << " "
+            << response.status;
+  connection.Write(SerializeResponse(response, request->method != "HEAD"));
 }
 
 }  // namespace
 
 absl::Status Serve(const std::string& address, uint16_t port,
                    const Handler& handler) {
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  if (inet_pton(AF_INET, address.c_str(), &addr.sin_addr) != 1) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("not an IPv4 address: ", address));
-  }
+  absl::StatusOr<TcpListener> listener = TcpListener::Listen(address, port);
+  if (!listener.ok()) return listener.status();
+  LOG(INFO) << "listening on http://" << address << ":" << listener->port();
 
-  int listener = socket(AF_INET, SOCK_STREAM, 0);
-  if (listener < 0) return ErrnoStatus("socket");
-  int enable = 1;
-  setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
-  if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0 ||
-      listen(listener, SOMAXCONN) < 0) {
-    absl::Status status = ErrnoStatus(absl::StrCat(address, ":", port));
-    close(listener);
-    return status;
-  }
-  LOG(INFO) << "listening on http://" << address << ":" << port;
-
+  // One thread per connection, so a slow client delays nobody else.
   for (;;) {
-    int fd = accept(listener, nullptr, nullptr);
-    if (fd < 0) {
-      if (errno != EINTR) PLOG(WARNING) << "accept";
-      continue;
-    }
-    std::thread(HandleConnection, fd, handler).detach();
+    std::thread(AnswerOneRequest, listener->Accept(), handler).detach();
   }
 }

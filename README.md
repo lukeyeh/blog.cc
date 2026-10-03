@@ -48,7 +48,8 @@ For a deployable binary: `bazel build -c opt :server`, then run
 | --- | --- |
 | `http.{h,cc}` | Parse a request head, serialise a response |
 | `site.{h,cc}` | Routing and static file lookup; add new endpoints in `Handle` |
-| `server.{h,cc}` | Socket accept loop, one thread per connection |
+| `server.{h,cc}` | Runs the HTTP server: one thread per connection, one request each |
+| `net.{h,cc}` | TCP listener and connection classes; the only code that touches the OS socket API |
 | `main.cc` | Flags and wiring |
 | `www/` | The site itself |
 

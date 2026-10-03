@@ -1,3 +1,6 @@
+// What this website serves: which response each request gets. Works purely in
+// terms of Request and Response and never sees a connection.
+
 #ifndef SITE_H_
 #define SITE_H_
 

@@ -24,14 +24,27 @@ cc_library(
 )
 
 cc_library(
+    name = "net",
+    srcs = ["net.cc"],
+    hdrs = ["net.h"],
+    deps = [
+        "@abseil-cpp//absl/log",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+cc_library(
     name = "server_lib",
     srcs = ["server.cc"],
     hdrs = ["server.h"],
     deps = [
         ":http",
+        ":net",
         "@abseil-cpp//absl/log",
         "@abseil-cpp//absl/status",
-        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/status:statusor",
     ],
 )
 
@@ -55,6 +68,16 @@ cc_test(
     srcs = ["http_test.cc"],
     deps = [
         ":http",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "net_test",
+    srcs = ["net_test.cc"],
+    deps = [
+        ":net",
+        "@abseil-cpp//absl/status",
         "@googletest//:gtest_main",
     ],
 )

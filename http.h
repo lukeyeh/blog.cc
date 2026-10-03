@@ -1,3 +1,7 @@
+// The HTTP/1.1 message format: converting between the text that travels over
+// a connection and the Request and Response values the rest of the program
+// works with. Knows nothing about connections or about what a request means.
+
 #ifndef HTTP_H_
 #define HTTP_H_
 
@@ -29,8 +33,13 @@ struct Response {
   std::vector<std::pair<std::string, std::string>> headers;
 };
 
-// Parses a request head: the request line and headers, without the blank line
-// that terminates them.
+// The bytes that mark the end of a request head. A head is the request line
+// and headers; everything a client sends before this marker.
+inline constexpr std::string_view kHeadTerminator = "\r\n\r\n";
+
+// Parses a request head, given without its kHeadTerminator. Fails with
+// InvalidArgument, and a message saying what is wrong, if `head` is not a
+// well-formed HTTP/1.x request.
 absl::StatusOr<Request> ParseRequest(std::string_view head);
 
 // Returns the bytes to put on the wire. HEAD responses pass
